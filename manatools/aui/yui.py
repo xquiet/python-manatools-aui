@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Unified YUI implementation that automatically selects the best available backend.
-Priority: Qt > GTK > NCurses
+Priority: Qt > GTK > NCurses > Web (web requires explicit selection)
 """
 
 import os
@@ -10,13 +10,14 @@ from enum import Enum
 
 class Backend(Enum):
     QT = "qt"
-    GTK = "gtk" 
+    GTK = "gtk"
     NCURSES = "ncurses"
+    WEB = "web"
 
 class YUI:
     _instance = None
     _backend = None
-    
+
     @classmethod
     def _detect_backend(cls):
         """Detect the best available backend"""
@@ -28,7 +29,9 @@ class YUI:
             return Backend.GTK
         elif backend_env == 'ncurses':
             return Backend.NCURSES
-        
+        elif backend_env == 'web':
+            return Backend.WEB
+
         # Auto-detect based on available imports
         # Require PySide6 (Qt6)
         try:
@@ -45,56 +48,60 @@ class YUI:
             return Backend.GTK
         except (ImportError, ValueError):
             pass
-            
+
         try:
             import curses
             return Backend.NCURSES
         except ImportError:
             pass
-            
-        raise RuntimeError("No UI backend available. Install PySide6, PyGObject (GTK4), or curses.")
-    
+
+        # Web backend is always available (pure Python) but not auto-selected
+        # User must explicitly set YUI_BACKEND=web
+        raise RuntimeError("No UI backend available. Install PySide6, PyGObject (GTK4), curses, or set YUI_BACKEND=web.")
+
     @classmethod
     def ui(cls):
         if cls._instance is None:
             cls._backend = cls._detect_backend()
             print(f"Detected backend: {cls._backend}")
-            
+
             if cls._backend == Backend.QT:
                 from .yui_qt import YUIQt as YUIImpl
             elif cls._backend == Backend.GTK:
                 from .yui_gtk import YUIGtk as YUIImpl
             elif cls._backend == Backend.NCURSES:
                 from .yui_curses import YUICurses as YUIImpl
+            elif cls._backend == Backend.WEB:
+                from .yui_web import YUIWeb as YUIImpl
             else:
                 raise RuntimeError(f"Unknown backend: {cls._backend}")
-                
+
             cls._instance = YUIImpl()
-            
+
         return cls._instance
-    
+
     @classmethod
     def backend(cls):
         if cls._instance is None:
             cls.ui()  # This will detect the backend
         return cls._backend
-    
+
     @classmethod
     def widgetFactory(cls):
         return cls.ui().widgetFactory()
-    
+
     @classmethod
     def optionalWidgetFactory(cls):
         return cls.ui().optionalWidgetFactory()
-    
+
     @classmethod
     def app(cls):
         return cls.ui().app()
-    
+
     @classmethod
     def application(cls):
         return cls.ui().application()
-    
+
     @classmethod
     def yApp(cls):
         return cls.ui().yApp()
@@ -144,7 +151,7 @@ __all__ = [
     'YUI', 'YUI_ui', 'YUI_widgetFactory', 'YUI_app', 'YUI_application', 'YUI_yApp',
     'YUIDimension', 'YAlignmentType', 'YDialogType', 'YDialogColorMode',
     'YEventType', 'YEventReason', 'YCheckBoxState', 'YButtonRole',
-    'YWidget', 'YSingleChildContainerWidget', 'YSelectionWidget', 
+    'YWidget', 'YSingleChildContainerWidget', 'YSelectionWidget',
     'YSimpleInputField', 'YItem', 'YTreeItem', 'YTableHeader', 'YTableItem', 'YTableCell',
     'YEvent', 'YWidgetEvent', 'YKeyEvent', 'YMenuEvent', 'YTimeoutEvent', 'YCancelEvent',
     'YUIException', 'YUIWidgetNotFoundException', 'YUINoDialogException', 'YUIInvalidWidgetException',

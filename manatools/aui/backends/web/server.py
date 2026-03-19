@@ -1,5 +1,10 @@
+# -*- coding: utf-8 -*-
 """
 HTTP and WebSocket server for the web backend.
+
+License: LGPLv2+
+
+Author:  Matteo Pasotti <xquiet@coriolite.com>
 
 This module provides a simple HTTP server that serves the dialog HTML
 and handles WebSocket connections for real-time event communication.
@@ -17,6 +22,7 @@ import struct
 import socket
 from typing import Optional, TYPE_CHECKING, Callable
 from urllib.parse import urlparse, parse_qs
+from importlib.resources import files
 
 if TYPE_CHECKING:
     from .dialogweb import YDialogWeb
@@ -27,35 +33,37 @@ logger = logging.getLogger("manatools.aui.web.server")
 class WebSocketHandler:
     """
     Simple WebSocket handler implementing RFC 6455.
-    
+
     This is a minimal implementation that handles text frames only.
     """
-    
+
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-    
-    def __init__(self, request, client_address, on_message: Callable[[str], None], on_close: Callable[[], None]):
+
+    def __init__(
+        self,
+        request,
+        client_address,
+        on_message: Callable[[str], None],
+        on_close: Callable[[], None],
+    ):
         self.request = request
         self.client_address = client_address
         self.on_message = on_message
         self.on_close = on_close
         self._closed = False
         self._lock = threading.Lock()
-    
+
     @classmethod
     def handshake(cls, request_handler) -> Optional["WebSocketHandler"]:
-        """
-        Perform WebSocket handshake. Returns WebSocketHandler on success.
-        """
+        """Perform WebSocket handshake. Returns WebSocketHandler on success."""
         try:
-            key = request_handler.headers.get('Sec-WebSocket-Key')
+            key = request_handler.headers.get("Sec-WebSocket-Key")
             if not key:
                 return None
-            
-            # Calculate accept key
+
             accept = hashlib.sha1((key + cls.GUID).encode()).digest()
             accept_key = base64.b64encode(accept).decode()
-            
-            # Send handshake response
+
             response = (
                 "HTTP/1.1 101 Switching Protocols\r\n"
                 "Upgrade: websocket\r\n"
@@ -65,81 +73,71 @@ class WebSocketHandler:
             )
             request_handler.wfile.write(response.encode())
             request_handler.wfile.flush()
-            
+
             return cls(
                 request_handler.request,
                 request_handler.client_address,
                 lambda msg: None,  # Placeholder, set by caller
-                lambda: None
+                lambda: None,
             )
         except Exception as e:
             logger.exception("WebSocket handshake failed: %s", e)
             return None
-    
+
     def receive_frame(self) -> Optional[str]:
         """Receive a WebSocket frame and return the text payload."""
         try:
-            # Read first two bytes
             header = self.request.recv(2)
             if len(header) < 2:
                 return None
-            
+
             fin = (header[0] >> 7) & 1
             opcode = header[0] & 0x0F
             masked = (header[1] >> 7) & 1
             payload_len = header[1] & 0x7F
-            
-            # Handle close frame
-            if opcode == 0x08:
+
+            if opcode == 0x08:  # Close frame
                 self._closed = True
                 return None
-            
-            # Handle ping
-            if opcode == 0x09:
+
+            if opcode == 0x09:  # Ping
                 self._send_pong()
                 return self.receive_frame()
-            
-            # Only handle text frames
-            if opcode != 0x01:
+
+            if opcode != 0x01:  # Not a text frame
                 return self.receive_frame()
-            
-            # Extended payload length
+
             if payload_len == 126:
                 ext = self.request.recv(2)
                 payload_len = struct.unpack(">H", ext)[0]
             elif payload_len == 127:
                 ext = self.request.recv(8)
                 payload_len = struct.unpack(">Q", ext)[0]
-            
-            # Masking key
-            mask_key = self.request.recv(4) if masked else b''
-            
-            # Payload
+
+            mask_key = self.request.recv(4) if masked else b""
             payload = self.request.recv(payload_len)
-            
-            # Unmask if needed
+
             if masked:
                 payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-            
-            return payload.decode('utf-8')
+
+            return payload.decode("utf-8")
         except Exception as e:
             if not self._closed:
                 logger.debug("WebSocket receive error: %s", e)
             return None
-    
+
     def send(self, message: str):
         """Send a text message through the WebSocket."""
         with self._lock:
             if self._closed:
                 return
             try:
-                payload = message.encode('utf-8')
+                payload = message.encode("utf-8")
                 length = len(payload)
-                
-                # Build frame
+
                 frame = bytearray()
                 frame.append(0x81)  # FIN + text opcode
-                
+
                 if length < 126:
                     frame.append(length)
                 elif length < 65536:
@@ -148,21 +146,21 @@ class WebSocketHandler:
                 else:
                     frame.append(127)
                     frame.extend(struct.pack(">Q", length))
-                
+
                 frame.extend(payload)
                 self.request.sendall(bytes(frame))
             except Exception as e:
                 logger.debug("WebSocket send error: %s", e)
                 self._closed = True
-    
+
     def _send_pong(self):
         """Send a pong frame."""
         with self._lock:
             try:
-                self.request.sendall(bytes([0x8A, 0x00]))  # Pong with no payload
+                self.request.sendall(bytes([0x8A, 0x00]))
             except Exception:
                 pass
-    
+
     def close(self):
         """Close the WebSocket connection."""
         with self._lock:
@@ -170,11 +168,10 @@ class WebSocketHandler:
                 return
             self._closed = True
             try:
-                # Send close frame
                 self.request.sendall(bytes([0x88, 0x00]))
             except Exception:
                 pass
-    
+
     def run(self):
         """Main loop to receive and process messages."""
         try:
@@ -194,141 +191,192 @@ class WebSocketHandler:
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Page builder
+# ---------------------------------------------------------------------------
+
+class PageBuilder:
+    """
+    Builds the full HTML page by loading ``templates/base.html`` from the
+    package and substituting the three runtime slots:
+
+    * ``{{ title }}``       - window / tab title
+    * ``{{ app_name }}``    - navbar brand text
+    * ``{{ dialog_html }}`` - rendered widget tree
+
+    The template is read from disk exactly once (class-level cache) so
+    repeated requests pay no I/O cost.
+    """
+
+    _template: Optional[str] = None
+    _template_lock = threading.Lock()
+
+    @classmethod
+    def _load_template(cls) -> str:
+        if cls._template is None:
+            with cls._template_lock:
+                # Double-checked locking: another thread may have loaded it
+                # while we were waiting on the lock.
+                if cls._template is None:
+                    cls._template = (
+                        files("manatools.aui.backends.web")
+                        .joinpath("templates/base.html")
+                        .read_text(encoding="utf-8")
+                    )
+        return cls._template
+
+    @classmethod
+    def build(cls, *, title: str, app_name: str, dialog_html: str) -> str:
+        """Return the complete HTML document as a string."""
+        return (
+            cls._load_template()
+            .replace("{{ title }}", title)
+            .replace("{{ app_name }}", app_name)
+            .replace("{{ dialog_html }}", dialog_html)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Request handler
+# ---------------------------------------------------------------------------
+
 class ManaToolsRequestHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for ManaTools web backend."""
-    
-    # Reference to the dialog, set by the server
+
+    # Injected by WebServer via a per-request subclass
     dialog: Optional["YDialogWeb"] = None
-    
+
     def log_message(self, format, *args):
-        """Override to use Python logging instead of stderr."""
         logger.debug(format, *args)
-    
+
+    def handle_one_request(self):
+        """Override to suppress flush errors after a WebSocket upgrade."""
+        try:
+            super().handle_one_request()
+        except Exception:
+            # After a WebSocket upgrade the underlying socket is owned by
+            # WebSocketHandler.run().  BaseHTTPRequestHandler tries to flush
+            # wfile when handle_one_request() returns, which raises on Windows
+            # because the socket is in raw mode.  Swallow silently here.
+            pass
+
     def do_GET(self):
-        """Handle GET requests."""
         parsed = urlparse(self.path)
         path = parsed.path
-        
-        if path == "/" or path == "/index.html":
+
+        if path in ("/", "/index.html"):
             self._serve_main_page()
         elif path == "/ws":
             self._handle_websocket()
         elif path.startswith("/static/"):
-            self._serve_static(path[8:])  # Remove /static/ prefix
+            self._serve_static(path[len("/static/"):])
         elif path == "/events":
-            # SSE endpoint for browsers without WebSocket
             self._serve_sse()
         else:
             self.send_error(404, "Not Found")
-    
+
     def do_POST(self):
-        """Handle POST requests for events."""
-        parsed = urlparse(self.path)
-        
-        if parsed.path == "/event":
+        if urlparse(self.path).path == "/event":
             self._handle_event_post()
         else:
             self.send_error(404, "Not Found")
-    
-    def _serve_main_page(self):
-        """Serve the main HTML page."""
-        if not self.dialog:
-            self.send_error(500, "No dialog available")
-            return
-        
-        try:
-            html_content = self._build_full_page()
-            
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", len(html_content.encode()))
-            self.end_headers()
-            self.wfile.write(html_content.encode())
-        except Exception as e:
-            logger.exception("Error serving main page: %s", e)
-            self.send_error(500, str(e))
-    
-    def _build_full_page(self) -> str:
-        """Build the complete HTML page with dialog content."""
-        # Get application title
-        title = "ManaTools"
+
+    # ------------------------------------------------------------------
+    # Page serving
+    # ------------------------------------------------------------------
+
+    def _resolve_title(self) -> str:
+        """Return the application title, falling back to 'ManaTools'."""
         try:
             from ...yui import YUI
             app = YUI.application()
             if app:
-                title = app.applicationTitle() or title
+                return app.applicationTitle() or "ManaTools"
         except Exception:
             pass
-        
-        # Get dialog content
-        dialog_html = self.dialog.render() if self.dialog else ""
-        
-        return f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <link rel="stylesheet" href="/static/css/manatools.css">
-</head>
-<body>
-    <div id="mana-app">
-        {dialog_html}
-    </div>
-    <script src="/static/js/manatools.js"></script>
-</body>
-</html>'''
-    
+        return "ManaTools"
+
+    def _serve_main_page(self):
+        if not self.dialog:
+            self.send_error(500, "No dialog available")
+            return
+        try:
+            title = self._resolve_title()
+            html = PageBuilder.build(
+                title=title,
+                app_name=title,
+                dialog_html=self.dialog.render(),
+            )
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as e:
+            logger.exception("Error serving main page: %s", e)
+            self.send_error(500, str(e))
+
+    # ------------------------------------------------------------------
+    # Static files
+    # ------------------------------------------------------------------
+
+    _CONTENT_TYPES = {
+        ".css":   "text/css",
+        ".js":    "application/javascript",
+        ".map":   "application/json",          # source maps shipped with Bootstrap
+        ".png":   "image/png",
+        ".svg":   "image/svg+xml",
+        ".ico":   "image/x-icon",
+        ".woff2": "font/woff2",
+        ".woff":  "font/woff",
+        ".ttf":   "font/ttf",
+    }
+
     def _serve_static(self, filename: str):
-        """Serve static files (CSS, JS)."""
-        # Security: prevent path traversal
-        if ".." in filename or filename.startswith("/"):
+        # Resolve both roots to absolute real paths so that symlinks and any
+        # OS-level normalisation are accounted for before the containment check.
+        static_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "static"))
+        filepath   = os.path.realpath(os.path.join(static_dir, filename))
+
+        # Reject anything that escapes the static root (path traversal guard).
+        # The trailing sep ensures "/static/css" cannot escape via "/static/css../".
+        if not filepath.startswith(static_dir + os.sep):
             self.send_error(403, "Forbidden")
             return
-        
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        filepath = os.path.join(static_dir, filename)
-        
+
         if not os.path.isfile(filepath):
             self.send_error(404, "Not Found")
             return
-        
-        # Determine content type
-        if filename.endswith(".css"):
-            content_type = "text/css"
-        elif filename.endswith(".js"):
-            content_type = "application/javascript"
-        elif filename.endswith(".png"):
-            content_type = "image/png"
-        elif filename.endswith(".svg"):
-            content_type = "image/svg+xml"
-        else:
-            content_type = "application/octet-stream"
-        
+
+        ext = os.path.splitext(filename)[1].lower()
+        content_type = self._CONTENT_TYPES.get(ext, "application/octet-stream")
+
         try:
             with open(filepath, "rb") as f:
                 content = f.read()
-            
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", len(content))
+            self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
         except Exception as e:
-            logger.exception("Error serving static file: %s", e)
+            logger.exception("Error serving static file %s: %s", filename, e)
             self.send_error(500, str(e))
-    
+
+    # ------------------------------------------------------------------
+    # WebSocket
+    # ------------------------------------------------------------------
+
     def _handle_websocket(self):
-        """Upgrade connection to WebSocket and handle messages."""
         ws = WebSocketHandler.handshake(self)
         if not ws:
             self.send_error(400, "WebSocket handshake failed")
             return
-        
-        # Register with dialog
+
         if self.dialog:
             self.dialog._register_websocket(ws)
-        
+
         def on_message(message: str):
             try:
                 data = json.loads(message)
@@ -336,27 +384,32 @@ class ManaToolsRequestHandler(http.server.BaseHTTPRequestHandler):
                     self.dialog._handle_ws_message(data)
             except json.JSONDecodeError:
                 logger.warning("Invalid JSON in WebSocket message: %s", message)
-        
+
         def on_close():
             if self.dialog:
                 self.dialog._unregister_websocket(ws)
-        
+
         ws.on_message = on_message
         ws.on_close = on_close
-        
-        # Run WebSocket message loop (blocking)
         ws.run()
-    
-    def _handle_event_post(self):
-        """Handle event POST requests (fallback for non-WebSocket)."""
+
+        # The WebSocket session is over.  Disable wfile so that
+        # handle_one_request()'s cleanup path cannot write to the socket.
         try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            data = json.loads(body)
-            
+            self.wfile = open(os.devnull, "wb")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # HTTP event fallback
+    # ------------------------------------------------------------------
+
+    def _handle_event_post(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
             if self.dialog:
                 self.dialog._handle_ws_message(data)
-            
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -364,29 +417,32 @@ class ManaToolsRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception("Error handling event POST: %s", e)
             self.send_error(500, str(e))
-    
+
+    # ------------------------------------------------------------------
+    # SSE fallback
+    # ------------------------------------------------------------------
+
     def _serve_sse(self):
-        """Serve Server-Sent Events (fallback for browsers without WebSocket)."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        
-        # Keep connection open for events
-        # This is a simplified implementation
         try:
             while True:
-                # Send keepalive
                 self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
-                threading.Event().wait(30)  # Wait 30 seconds
+                threading.Event().wait(30)
         except Exception:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Server infrastructure
+# ---------------------------------------------------------------------------
+
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    """HTTP server that handles requests in separate threads."""
+    """HTTP server that handles each request in a dedicated thread."""
     allow_reuse_address = True
     daemon_threads = True
 
@@ -394,64 +450,56 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class WebServer:
     """
     Main web server for the ManaTools web backend.
-    
-    Manages HTTP server, WebSocket connections, and serves the dialog UI.
+
+    Manages HTTP server lifecycle, WebSocket connections, and serves the
+    dialog UI.
     """
-    
-    def __init__(self, dialog: "YDialogWeb", host: str = "127.0.0.1", port: int = 0):
-        """
-        Initialize the web server.
-        
-        Args:
-            dialog: The YDialogWeb instance to serve
-            host: Host to bind to (default: localhost only)
-            port: Port to bind to (0 for auto-select)
-        """
+
+    def __init__(
+        self,
+        dialog: "YDialogWeb",
+        host: str = "127.0.0.1",
+        port: int = 0,
+    ):
         self.dialog = dialog
         self.host = host
         self.port = port
         self._server: Optional[ThreadedHTTPServer] = None
         self._running = False
         self._lock = threading.Lock()
-    
+
     def start(self):
-        """Start the HTTP server (blocking call)."""
+        """Start the HTTP server (blocking)."""
         with self._lock:
             if self._running:
                 return
-            
-            # Create custom handler class with dialog reference
+
             handler_class = type(
-                'DialogRequestHandler',
+                "DialogRequestHandler",
                 (ManaToolsRequestHandler,),
-                {'dialog': self.dialog}
+                {"dialog": self.dialog},
             )
-            
-            # Find available port if port is 0
             self._server = ThreadedHTTPServer((self.host, self.port), handler_class)
             self.port = self._server.server_address[1]
             self._running = True
-        
+
         logger.info("Web server started at %s", self.get_url())
-        
         try:
             self._server.serve_forever()
         except Exception as e:
             logger.exception("Server error: %s", e)
         finally:
             self._running = False
-    
+
     def stop(self):
         """Stop the HTTP server."""
         with self._lock:
             if self._server and self._running:
                 self._server.shutdown()
                 self._running = False
-    
+
     def get_url(self) -> str:
-        """Get the URL where the dialog is accessible."""
         return f"http://{self.host}:{self.port}/"
-    
+
     def is_running(self) -> bool:
-        """Check if the server is running."""
         return self._running

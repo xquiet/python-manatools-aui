@@ -1,15 +1,19 @@
 """
 Common utilities shared across all web backend widgets.
+
+Author: Matteo Pasotti <xquiet@coriolite.com>
+
+License: LGPLv2+
+
 """
 
 import html
 import re
 from typing import Optional
 
-
 def escape_html(text: str) -> str:
     """Escape HTML special characters."""
-    return html.escape(str(text)) if text else ""
+    return html.escape(str(text), quote=False) if text else ""
 
 
 def format_label_with_shortcut(label: str) -> str:

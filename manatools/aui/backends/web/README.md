@@ -6,15 +6,6 @@ A web-based backend for python-manatools AUI that renders applications in a web 
 
 This package adds a new `web` backend to python-manatools, allowing any ManaTools application to be accessed through a web browser without any code changes.
 
-## Installation
-
-Copy the following files to your python-manatools AUI-REWORKING branch:
-
-1. **Replace** `manatools/aui/yui.py` with the version in this package (adds `Backend.WEB`)
-2. **Add** `manatools/aui/yui_web.py`
-3. **Add** the entire `manatools/aui/backends/web/` directory
-4. **Update** `manatools/aui/backends/__init__.py` to add `"web"` to `__all__`
-
 ## Usage
 
 ### Running with Web Backend
@@ -215,5 +206,7 @@ self._server = WebServer(self, host="0.0.0.0", port=8080)
 LGPLv2+ (same as python-manatools)
 
 ## Author
+
+Matteo Pasotti <xquiet@coriolite.com>
 
 Based on python-manatools by Angelo Naselli <anaselli@linux.it>

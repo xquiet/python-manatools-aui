@@ -8,34 +8,55 @@ from .commonweb import widget_attrs, escape_html
 
 
 class YTreeWeb(YSelectionWidget):
-    """Tree view widget."""
+    """Tree view widget.
+
+    Root items are stored in the base-class ``_items`` list (inherited from
+    YSelectionWidget) so that callers that access ``widget._items`` directly
+    (e.g. the swap pattern in tests) always see the correct set.  There is no
+    separate ``_root_items`` list.
+    """
 
     def __init__(self, parent=None, label: str = "", multiselection=False, recursiveselection=False):
         super().__init__(parent)
         self._label = label
         self._multiselection = multiselection
         self._recursiveselection = recursiveselection
-        self._root_items = []
         # Maps stable string id -> YTreeItem for O(1) lookup on click events.
         self._item_registry: dict = {}
 
     def widgetClass(self):
         return "YTree"
 
-    def addItem(self, item):
+    def addItem(self, item, notify=True):
+        """Add a root-level item and register its entire subtree.
+
+        Args:
+            item:   A YTreeItem instance or a plain string label.
+            notify: If True (default) schedule a UI update immediately.
+                    Pass False when adding items in bulk and call
+                    _notify_update() manually after the last addItem()
+                    to coalesce all changes into a single render.
+        """
         if isinstance(item, str):
             item = YTreeItem(item)
-        self._root_items.append(item)
+        self._items.append(item)
         self._register_item_tree(item)
-        # honour pre-selected items coming from the caller
-        if item.selected():
-            self.selectItem(item, True)
+        if notify:
+            self._notify_update()
         return item
 
+    def addItems(self, items):
+        """Add multiple root-level items with a single deferred UI update."""
+        for item in items:
+            self.addItem(item, notify=False)
+        self._notify_update()
+
     def deleteAllItems(self):
-        self._root_items.clear()
+        """Clear all items, selections and the registry, then refresh the UI."""
+        self._items.clear()
         self._selected_items.clear()
         self._item_registry.clear()
+        self._notify_update()
 
     def rebuildTree(self):
         self._notify_update()
@@ -49,7 +70,10 @@ class YTreeWeb(YSelectionWidget):
         return f"{self.id()}-item-{id(item)}"
 
     def _register_item_tree(self, item: YTreeItem):
-        """Recursively register item and all its descendants."""
+        """Recursively register item and all its descendants.
+
+        Also honours pre-selected state set by the caller before addItem().
+        """
         self._item_registry[self._item_id(item)] = item
         if item.selected():
             self.selectItem(item, True)
@@ -60,8 +84,8 @@ class YTreeWeb(YSelectionWidget):
     def _handle_item_click(self, item_id: str):
         """Called by the dialog event dispatcher when a tree item is clicked.
 
-        Updates internal selection state and returns the clicked YTreeItem
-        (or None if the id is unknown).
+        Updates internal selection state and returns the clicked YTreeItem,
+        or None if the id is unknown.
         """
         item = self._item_registry.get(item_id)
         if item is None:
@@ -96,10 +120,6 @@ class YTreeWeb(YSelectionWidget):
             if children_html else ""
         )
 
-        # data-item-id links the DOM node back to the YTreeItem via
-        # _item_registry; data-tree-id identifies the owning YTreeWeb widget.
-        # stopPropagation in the JS handler (see below) prevents bubbling so
-        # that only the innermost clicked item fires the event.
         return (
             f'<div class="mana-tree-item {selected_class} {open_class}"'
             f' style="padding-left:{indent}px"'
@@ -116,7 +136,7 @@ class YTreeWeb(YSelectionWidget):
         # Rebuild registry on every full render so ids stay consistent after
         # deleteAllItems() + re-population cycles.
         self._item_registry.clear()
-        for item in self._root_items:
+        for item in self._items:
             self._register_item_tree(item)
 
         label_html = ""
@@ -127,7 +147,7 @@ class YTreeWeb(YSelectionWidget):
                 f'</label>'
             )
 
-        items_html = "".join(self._render_item(item) for item in self._root_items)
+        items_html = "".join(self._render_item(item) for item in self._items)
         attrs = widget_attrs(self.id(), "YTree", self._enabled, self._visible)
 
         return (

@@ -323,6 +323,13 @@ class YDialogWeb(YSingleChildContainerWidget):
             if hasattr(widget, "setChecked"):
                 widget.setChecked(event_data["checked"])
 
+        # Tree item selection — uses a stable item id instead of a
+        # flat index because tree items are nested.
+        if "itemId" in event_data:
+            if hasattr(widget, '_handle_item_click'):
+                widget._handle_item_click(event_data["itemId"])
+ 
+        # (existing selectedIndex / selectedValue block follows unchanged)
         if "selectedIndex" in event_data or "selectedValue" in event_data:
             if hasattr(widget, "_handle_selection_change"):
                 # Prefer value-based lookup: avoids off-by-one caused by a

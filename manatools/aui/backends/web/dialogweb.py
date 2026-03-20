@@ -380,21 +380,32 @@ class YDialogWeb(YSingleChildContainerWidget):
 
     def _flush_update(self, widget):
         """Actually broadcast the update for a widget (called by the timer).
-
-        Targets ``[data-container-for="<id>"]`` first so that widgets that
+ 
+        If the widget exposes a ``render_update()`` method it is called instead
+        of ``render()`` so that widgets with static parts (e.g. a label that
+        must not be duplicated on every value change, like YProgressBar) can
+        return a precise (selector, html) pair targeting only their dynamic
+        inner element.
+ 
+        Falls back to the original behaviour for all other widgets:
+        targets ``[data-container-for="<id>"]`` first so that widgets that
         wrap themselves in a container div (e.g. ComboBox with a label) are
-        replaced atomically.  Falls back to ``#<id>`` for simple widgets that
-        put the id directly on their root element.
+        replaced atomically, then falls back to ``#<id>`` for simple widgets.
         """
         with self._pending_lock:
             self._pending_updates.pop(widget.id(), None)
         try:
-            html = widget.render()
+            if hasattr(widget, 'render_update'):
+                target, html = widget.render_update()
+            else:
+                html = widget.render()
+                target = f'[data-container-for="{widget.id()}"], #{widget.id()}'
+ 
             self._broadcast({
                 "type": "update",
                 "updates": [{
                     "action": "replace",
-                    "target": f'[data-container-for="{widget.id()}"], #{widget.id()}',
+                    "target": target,
                     "html": html,
                 }]
             })

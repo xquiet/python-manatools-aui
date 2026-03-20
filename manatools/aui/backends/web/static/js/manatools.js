@@ -288,11 +288,37 @@
     }
 
     function handleTreeItemClick(event) {
+        // Stop bubbling so only the innermost .mana-tree-item fires,
+        // not every ancestor item up the tree.
+        event.stopPropagation();
+
         const item = event.currentTarget;
-        const tree = item.closest('.mana-ytree');
-        tree.querySelectorAll('.mana-tree-item').forEach(i => i.classList.remove('selected'));
+        const treeId = item.dataset.treeId;
+        const itemId = item.dataset.itemId;
+
+        if (!treeId || !itemId) return;
+
+        // Update visual selection: clear siblings, mark this one.
+        const tree = document.getElementById(treeId);
+        if (tree) {
+            tree.querySelectorAll('.mana-tree-item').forEach(el => {
+                el.classList.remove('selected');
+            });
+        }
         item.classList.add('selected');
-        sendEvent({ type: 'event', widget_id: getWidgetId(tree), reason: 'SelectionChanged', data: {} });
+
+        // Toggle open/collapsed on items that have children.
+        if (item.querySelector('.mana-tree-children')) {
+            item.classList.toggle('open');
+            item.classList.toggle('collapsed');
+        }
+
+        sendEvent({
+            type: 'event',
+            widget_id: treeId,
+            reason: 'SelectionChanged',
+            data: { itemId: itemId }
+        });
     }
 
     function handleTabClick(event) {
